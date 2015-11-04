@@ -1,0 +1,285 @@
+#include <stdosl.h>
+
+int has_solutions (vector StartPoint, vector UnitVector, float Radius) {
+	float b = 2 * dot (UnitVector, StartPoint);
+	float bsquared = pow(b,2);
+	float c = dot (StartPoint,StartPoint) - pow(Radius,2);
+	float fourac = 4 * c;
+
+	if (bsquared > fourac) {
+		return 1;
+	} else {
+		return 0;
+	}
+}
+
+int linetype (vector StartPoint, vector UnitVector, float Radius) {
+	float b = 2 * dot (UnitVector, StartPoint);
+	float bsquared = pow(b,2);
+	float c = dot (StartPoint,StartPoint) - pow(Radius,2);
+	float fourac = 4 * c;
+
+	if (bsquared > fourac) {
+		float d1 = (-b + pow(bsquared - fourac, 0.5)) / 2;
+		float d2 = (-b - pow(bsquared - fourac, 0.5)) / 2;
+		if (d1 < 0 && d2 < 0) {
+			return 2;
+		} else if (d1 < 0 || d2 < 0) {
+			return 1;
+		} else {
+			return 0;
+		}
+	} else {
+		return 3;
+	}
+}
+
+vector lmin (vector StartPoint, vector UnitVector, float Radius) {
+	float b = 2 * dot (UnitVector, StartPoint);
+	float bsquared = pow(b,2);
+	float c = dot (StartPoint,StartPoint) - pow(Radius,2);
+	float fourac = 4 * c;
+
+	if (bsquared > fourac) {
+		float d1 = (-b + pow(bsquared - fourac, 0.5)) / 2;
+		float d2 = (-b - pow(bsquared - fourac, 0.5)) / 2;
+		return StartPoint + UnitVector * min(d1, d2);
+	} else {
+		return vector(0);
+	}
+}
+
+vector lmax (vector StartPoint, vector UnitVector, float Radius) {
+	float b = 2 * dot (UnitVector, StartPoint);
+	float bsquared = pow(b,2);
+	float c = dot (StartPoint,StartPoint) - pow(Radius,2);
+	float fourac = 4 * c;
+
+	if (bsquared > fourac) {
+		float d1 = (-b + pow(bsquared - fourac, 0.5)) / 2;
+		float d2 = (-b - pow(bsquared - fourac, 0.5)) / 2;
+		return StartPoint + UnitVector * max(d1, d2);
+	} else {
+		return vector(0);
+	}
+}
+
+struct linesample {
+	int has_solutions;
+	int type;
+	vector min;
+	vector max;
+};
+
+shader nishita_sky (
+	float Height = 1,
+	float Intensity = 20,
+    float PlanetRadius = 6360,
+    float AtmHeight = 100,
+    float CloudHeight = 12,
+	vector SunVector = vector (0,0,1),
+
+	// Inputs for planet rotation.
+	vector EarthAxis = vector (0,1,0),
+	float EarthSpin = 0.0,
+    float LongitudeOffset =  0.0,
+    float LatitudeOffset  = 90.0,
+
+	output color Rayleigh = 0.0,
+	output color Mie = 0.0,
+	output color Sky = 0.0,
+	output float Earth_Mask = 0.0,
+	output normal Earth_Normal = vector(0),
+    output normal Cloud_Normal = vector(0),
+	output color Earth_Transmittance  = color(0),
+	output color Earth_Specular = color(0),
+    output vector Debug = vector(0)
+)
+
+{
+	//Variables:
+	float Re = PlanetRadius*1e3;
+	float Ra = Re+AtmHeight*1e3;
+    float Rc = Re+CloudHeight*1e3;
+	float Hr = 79.94*AtmHeight; // Rayleigh scale height
+	float Hm = 12*AtmHeight; // Mie scale height
+	float g = 0.76; // Anisotropy term for Mie scattering.
+
+	vector BetaR = vector(5.8e-6,13.0e-6,22.4e-6);
+	vector BetaM_max = vector(9.73e-6);
+	vector BetaM_min = vector(13.28e-6);
+	//vector BetaM = BetaM_min + Hazyness * (BetaM_max - BetaM_min);
+	vector BetaM =  vector(20e-6);
+
+
+	//Clean up inputs:
+	vector SunDirection = normalize(SunVector);
+	vector Direction = normalize(P);
+
+	//Calcualte Rayleigh and mie phases.
+	float mu = dot(Direction, SunDirection);
+  	float phaseR = (3/(16 * M_PI)) * (1 + mu*mu);
+  	float phaseM = (3/(8 * M_PI)) * ((1 - g*g) * (1 + mu*mu) / ((2 + g*g) * pow(1 + g*g - 2 * g * mu, 1.5)));
+
+	//Stuff that will eventually help form my output.
+	vector SumR = vector(0);
+	vector SumM = vector(0);
+	vector SumE = vector(0);
+
+	//Set up start and end points for my integrals.
+	vector Pu = vector(0,0,0);
+	vector Pv = vector(0,0,0);
+    vector Pw = vector(0,0,0);
+
+	//Get start and end point for View Line.
+	if (Height > 0) {
+		vector Pc = vector (0,0,Re + Height);
+		Pu = Pc;
+		
+		linesample groundline;
+		groundline.has_solutions = has_solutions(Pc, Direction, Re);
+		groundline.type = linetype(Pc, Direction, Re);
+		groundline.min = lmin(Pc, Direction, Re);
+		groundline.max = lmax(Pc, Direction, Re);
+
+		linesample atmosphereline;
+		atmosphereline.has_solutions = has_solutions(Pc, Direction, Ra);
+		atmosphereline.type = linetype(Pc, Direction, Ra);
+		atmosphereline.min = lmin(Pc, Direction, Ra);
+		atmosphereline.max = lmax(Pc, Direction, Ra);
+
+        linesample cloudline;
+		cloudline.has_solutions = has_solutions(Pc, Direction, Rc);
+		cloudline.type = linetype(Pc, Direction, Rc);
+		cloudline.min = lmin(Pc, Direction, Rc);
+		cloudline.max = lmax(Pc, Direction, Rc);
+
+        float LongOff = LongitudeOffset/180*M_PI;
+        float LatOff  = (LatitudeOffset-90) / 180*M_PI;
+
+		Pv = atmosphereline.max;
+		if (atmosphereline.has_solutions && atmosphereline.type == 0) {
+			// Line starts outside atmoshere, so Pu becomes Line.min
+			Pu = atmosphereline.min;
+		}
+		if (groundline.has_solutions && groundline.type == 0) {
+			// Line hits ground, Pv becomes point at which line hits ground, which will be Line.min
+			Pv = groundline.min;
+			// We also want to output UV coordinates for the earth.
+            point Pn = rotate(normalize(Pv), LongOff, point(0,0,-1), point(0,0,1));
+            point lg_axis = rotate(point(0,1,0), LongOff, point(0,0,-1), point(0,0,1));
+            Pn = rotate(Pn, LatOff, -lg_axis, lg_axis);
+            
+            point spin_axis = rotate(rotate(EarthAxis, LongOff, point(0,0,-1), point(0,0,1)), LatOff, point(0,-1,0), point(0,1,0));
+            Pn = rotate(Pn, EarthSpin/180*M_PI, -spin_axis, spin_axis);
+			Earth_Normal = normalize(Pn);
+			// We could try and do specular shading here as well.
+            vector nPv = normalize(Pv);
+			vector R = reflect (SunDirection,nPv);
+			float ks = 2;
+			float shininess = 23;
+			float specular = ks * pow(dot(R, Direction), shininess);
+			Earth_Specular = color (specular);
+            Earth_Mask = dot(SunDirection,nPv);
+		}
+        if (cloudline.has_solutions && cloudline.type == 0) {
+            Pw = cloudline.min;
+            // Cloud UV
+            point Pn = rotate(normalize(Pw), LongOff, point(0,0,-1), point(0,0,1));
+            point lg_axis = rotate(point(0,1,0), LongOff, point(0,0,-1), point(0,0,1));
+            Pn = rotate(Pn, LatOff, -lg_axis, lg_axis);
+            
+            point spin_axis = rotate(rotate(EarthAxis, LongOff, point(0,0,-1), point(0,0,1)), LatOff, point(0,-1,0), point(0,1,0));
+            Pn = rotate(Pn, EarthSpin/180*M_PI, -spin_axis, spin_axis);
+            Cloud_Normal = normalize(Pn);
+            Debug = vector(0.5-Earth_Mask/2);
+        }
+	}
+
+	// Create samples along view ray.
+	int numSamples = 32;
+	int numSamplesL = 4;
+	
+	float segmentLength = distance (Pu, Pv) / numSamples;
+	float opticalDepthR = 0;
+  	float opticalDepthM = 0;
+
+	for (int i = 0; i < numSamples; i++) {
+	vector Px = Pu + segmentLength * Direction * (i + 0.5);
+	float sampleHeight = length(Px) - Re;
+
+		/* Get optical depth for light at this sample: */
+		float Hr_sample = exp(-sampleHeight/Hr) * segmentLength;
+		float Hm_sample = exp(-sampleHeight/Hm) * segmentLength;
+
+		opticalDepthR += Hr_sample;
+		opticalDepthM += Hm_sample;
+
+		//Get light depth to sun at this sample.
+		float opticalDepthLR = 0;
+		float opticalDepthLM = 0;
+
+		linesample atmosphereline_sample;
+		atmosphereline_sample.has_solutions = has_solutions(Px, SunDirection, Ra);
+		atmosphereline_sample.type = linetype(Px, SunDirection, Ra);
+		atmosphereline_sample.min = lmin(Px, SunDirection, Ra);
+		atmosphereline_sample.max = lmax(Px, SunDirection, Ra);
+
+		linesample groundline_sample;
+		groundline_sample.has_solutions = has_solutions(Px, SunDirection, Re);
+		groundline_sample.type = linetype(Px, SunDirection, Re);
+		groundline_sample.min = lmin(Px, SunDirection, Re);
+		groundline_sample.max = lmax(Px, SunDirection, Re);
+
+        linesample cloudline_sample;
+        cloudline_sample.has_solutions = has_solutions(Px, SunDirection, Rc);
+        cloudline_sample.type = linetype(Px, SunDirection, Rc);
+        cloudline_sample.min = lmin(Px, SunDirection, Rc);
+        cloudline_sample.max = lmax(Px, SunDirection, Rc);
+
+		vector Ps = atmosphereline_sample.max;
+		int j = 0;
+		if (groundline_sample.has_solutions && groundline_sample.type == 0) {
+			//Light is below horizon from this point. No sample needed.
+			opticalDepthLR += 0;
+			opticalDepthLM += 0;
+		} else {
+			float segmentLengthL = distance(Px, Ps) / numSamplesL;
+
+			for (j = 0; j < numSamplesL; j++) {
+				vector Pl = Px + segmentLengthL * SunDirection * (j + 0.5);
+				float sampleHeightL = length(Pl) - Re;
+				if (sampleHeightL < 0) break;
+				// ignore sampleheights < 0 they're inside the planet...
+				float Hlr_sample = exp(-sampleHeightL/Hr)*segmentLengthL;
+				float Hlm_sample = exp(-sampleHeightL/Hm)*segmentLengthL;
+
+				opticalDepthLR += Hlr_sample;
+				opticalDepthLM += Hlm_sample;
+			}
+		}
+
+		// With our light samples done we can calculate the attenuation.
+		// Only include a sample if we reached j (so not if we hit the break clause for rays that hit the ground in finding the sun)
+		if (j == numSamplesL) {
+			vector tauR = BetaR * (opticalDepthR + opticalDepthLR);
+			vector tauM = BetaM * 1.1 * (opticalDepthM + opticalDepthLM);
+			vector tau = tauR + tauM;
+			vector attnR = vector (exp(-tauR[0]), exp(-tauR[1]), exp(-tauR[2]));
+			vector attnM = vector (exp(-tauM));
+			vector attenuation = vector (exp(-tau[0]), exp(-tau[1]), exp(-tau[2]));
+
+			vector tauE = BetaR * opticalDepthR + BetaM * 1.1 * opticalDepthM;
+			vector attnE = vector (exp(-tauE[0]), exp(-tauE[1]), exp(-tauE[2]));
+
+			SumR += Hr_sample * attenuation;
+			SumM += Hm_sample * attenuation;
+			SumE += attnE * (Hr_sample + Hm_sample);
+		}
+	}
+
+	Rayleigh = color (SumR * phaseR * BetaR) * Intensity;
+	Mie = color (SumM * phaseM * BetaM) * Intensity;
+	Sky =  Rayleigh + Mie;
+	Earth_Transmittance = color(SumE[0],SumE[1],SumE[2]); 
+}
